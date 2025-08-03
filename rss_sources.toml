@@ -8,6 +8,14 @@
 # - url: RSS feed 的完整 URL 地址
 # - 新增源后重新运行程序即可生效
 # - 建议添加与 Rust 技术相关的高质量源
+[[rss_sources]]
+name = " "
+url = " "
+
+[[rss_sources]]
+name = "Read Rust"
+url = "https://readrust.net/all/feed.rss"
+
 
 [[rss_sources]]
 name = "Rust Blog"
@@ -32,3 +40,7 @@ url = "https://blog.japaric.io/index.xml"
 [[rss_sources]]
 name = "Rust中文社区"
 url = "https://rustcc.cn/rss"
+
+[[rss_sources]]
+name = "Inside Rust博客"
+url = "https://blog.rust-lang.org/inside-rust/feed.xml"
