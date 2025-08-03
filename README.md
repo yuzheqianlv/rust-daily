@@ -18,31 +18,7 @@
 - 🤖 **守护进程**: 支持后台自动运行，每 4 小时生成日报
 - 🔗 **论坛集成**: 通过 RSS feeds 与 Freedit 论坛无缝集成
 
-## Freedit 论坛集成
 
-项目支持与 [Freedit](https://github.com/freedit-org/freedit) 论坛系统集成，实现日报自动发布功能：
-
-### 集成特性
-- 🚀 **自动发布**: 生成日报后自动发布到指定论坛
-- 🔐 **安全认证**: 支持用户名密码登录
-- 🏷️ **智能标签**: 自动添加相关技术标签
-- ⚡ **连接测试**: 内置连接和权限检测
-- 📊 **错误处理**: 完善的异常处理和重试机制
-
-### 快速开始
-```bash
-# 配置论坛集成
-cp .env.example .env
-# 编辑 .env 文件设置 FREEDIT_* 相关配置
-
-# 测试连接
-cargo run -- --test-connection
-
-# 生成并发布日报
-cargo run -- --publish
-```
-
-详细配置请参考 [Freedit 集成指南](FREEDIT_INTEGRATION.md)。
 
 ## 处理模式
 
