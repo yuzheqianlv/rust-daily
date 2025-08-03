@@ -10,11 +10,15 @@ mod rss_parser;
 mod daily_generator;
 mod config;
 mod history;
+mod rss_server;
+mod scheduler;
 
 use rss_parser::RssFetcher;
 use daily_generator::DailyGenerator;
 use config::Config;
 use history::HistoryManager;
+use rss_server::{RssServer, RssServerConfig};
+use scheduler::TaskScheduler;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewsItem {
@@ -95,6 +99,55 @@ async fn main() -> Result<()> {
                 .help("批量处理新闻，生成整体摘要")
                 .action(clap::ArgAction::SetTrue)
         )
+        .arg(
+            Arg::new("publish")
+                .long("publish")
+                .help("发布日报到 Freedit 论坛")
+                .action(clap::ArgAction::SetTrue)
+        )
+        .arg(
+            Arg::new("test-connection")
+                .long("test-connection")
+                .help("测试 Freedit 论坛连接")
+                .action(clap::ArgAction::SetTrue)
+        )
+        .arg(
+            Arg::new("serve")
+                .long("serve")
+                .help("启动 RSS 服务器")
+                .action(clap::ArgAction::SetTrue)
+        )
+        .arg(
+            Arg::new("port")
+                .long("port")
+                .value_name("PORT")
+                .default_value("7080")
+                .help("RSS 服务器端口 (默认: 7080)")
+        )
+        .arg(
+            Arg::new("list-sources")
+                .long("list-sources")
+                .help("列出当前配置的 RSS 源")
+                .action(clap::ArgAction::SetTrue)
+        )
+        .arg(
+            Arg::new("add-source")
+                .long("add-source")
+                .value_name("NAME,URL")
+                .help("添加新的 RSS 源 (格式: \"名称,URL\")")
+        )
+        .arg(
+            Arg::new("daemon")
+                .long("daemon")
+                .help("守护进程模式：每 4 小时自动生成日报")
+                .action(clap::ArgAction::SetTrue)
+        )
+        .arg(
+            Arg::new("task-stats")
+                .long("task-stats")
+                .help("显示定时任务执行统计")
+                .action(clap::ArgAction::SetTrue)
+        )
         .get_matches();
     
     let output_file = matches.get_one::<String>("output");
@@ -108,12 +161,137 @@ async fn main() -> Result<()> {
     let clear_history = matches.get_flag("clear-history");
     let _single_mode = matches.get_flag("single-mode");
     let batch_mode = matches.get_flag("batch-mode");
+    let publish_mode = matches.get_flag("publish");
+    let test_connection = matches.get_flag("test-connection");
+    let serve_mode = matches.get_flag("serve");
+    let port: u16 = matches.get_one::<String>("port")
+        .unwrap()
+        .parse()
+        .unwrap_or(7080);
+    let list_sources = matches.get_flag("list-sources");
+    let add_source = matches.get_one::<String>("add-source");
+    let daemon_mode = matches.get_flag("daemon");
+    let task_stats = matches.get_flag("task-stats");
     
     // 默认使用单条处理模式，除非明确指定批量模式
     let use_single_processing = !batch_mode;
     
     // 初始化历史记录管理器
     let mut history_manager = HistoryManager::new()?;
+    
+    // 处理 RSS 源管理命令
+    if list_sources {
+        let config = Config::load()?;
+        println!("📡 当前配置的 RSS 源:");
+        println!("┌─────┬─────────────────────────────┬─────────────────────────────────────────────────────┐");
+        println!("│ 序号 │           名称              │                     URL                             │");
+        println!("├─────┼─────────────────────────────┼─────────────────────────────────────────────────────┤");
+        for (i, source) in config.rss_sources.iter().enumerate() {
+            println!("│ {:3} │ {:27} │ {:51} │", 
+                i + 1, 
+                if source.name.len() > 27 { &source.name[..24] } else { &source.name },
+                if source.url.len() > 51 { &source.url[..48] } else { &source.url }
+            );
+        }
+        println!("└─────┴─────────────────────────────┴─────────────────────────────────────────────────────┘");
+        println!("💡 编辑 rss_sources.toml 文件来添加或修改 RSS 源");
+        return Ok(());
+    }
+    
+    if let Some(source_info) = add_source {
+        let parts: Vec<&str> = source_info.split(',').collect();
+        if parts.len() != 2 {
+            eprintln!("❌ 错误的格式！请使用: --add-source \"名称,URL\"");
+            eprintln!("📝 例如: --add-source \"我的博客,https://myblog.com/feed.xml\"");
+            return Ok(());
+        }
+        
+        let name = parts[0].trim().to_string();
+        let url = parts[1].trim().to_string();
+        
+        if name.is_empty() || url.is_empty() {
+            eprintln!("❌ 名称和 URL 都不能为空！");
+            return Ok(());
+        }
+        
+        Config::add_source_to_file(&name, &url)?;
+        println!("✅ 已添加 RSS 源: {} -> {}", name, url);
+        println!("💡 重新运行程序来使用新的 RSS 源");
+        return Ok(());
+    }
+    
+    // 处理 RSS 服务器模式
+    if serve_mode {
+        info!("启动 RSS 服务器模式");
+        
+        // 创建报告目录
+        let reports_dir = std::env::var("REPORTS_DIR")
+            .unwrap_or_else(|_| "./reports".to_string());
+        std::fs::create_dir_all(&reports_dir)?;
+        
+        // 创建服务器配置
+        let mut config = RssServerConfig::from_env();
+        config.port = port;
+        
+        // 启动服务器
+        let server = RssServer::new(config, reports_dir);
+        server.start().await?;
+        return Ok(());
+    }
+    
+    // 处理守护进程模式
+    if daemon_mode {
+        info!("启动守护进程模式 - 定时任务调度器");
+        
+        // 创建报告目录
+        let reports_dir = std::env::var("REPORTS_DIR")
+            .unwrap_or_else(|_| "./reports".to_string());
+        std::fs::create_dir_all(&reports_dir)?;
+        
+        // 创建并启动任务调度器
+        let scheduler = TaskScheduler::new(reports_dir).await?;
+        
+        // 使用 Ctrl+C 信号处理来优雅关闭
+        let scheduler_shutdown = std::sync::Arc::new(tokio::sync::Mutex::new(scheduler));
+        let scheduler_clone = scheduler_shutdown.clone();
+        
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c().await.expect("Failed to listen for ctrl+c");
+            info!("收到停止信号，正在优雅关闭...");
+            
+            let mut scheduler = scheduler_clone.lock().await;
+            if let Err(e) = scheduler.shutdown().await {
+                warn!("关闭调度器时出错: {}", e);
+            }
+            
+            std::process::exit(0);
+        });
+        
+        // 启动调度器（这会阻塞直到程序结束）
+        let mut scheduler = scheduler_shutdown.lock().await;
+        scheduler.start().await?;
+        return Ok(());
+    }
+    
+    // 处理任务统计
+    if task_stats {
+        // 创建临时调度器来获取统计信息
+        let reports_dir = std::env::var("REPORTS_DIR")
+            .unwrap_or_else(|_| "./reports".to_string());
+        let scheduler = TaskScheduler::new(reports_dir).await?;
+        let stats = scheduler.get_task_stats().await;
+        stats.display();
+        return Ok(());
+    }
+    
+    // 处理连接测试（已移除 - 现在推荐使用 RSS 集成）
+    if test_connection {
+        println!("💡 连接测试功能已移除");
+        println!("   现在推荐使用 RSS 集成方式:");
+        println!("   1. 启动 RSS 服务器: ./target/debug/rust-daily --serve");
+        println!("   2. 在 Freedit 中配置 Inn Feeds 来自动抓取内容");
+        return Ok(());
+    }
     
     // 处理管理命令
     if show_stats {
@@ -215,12 +393,31 @@ async fn main() -> Result<()> {
         history_manager.mark_as_processed(&filtered_news)?;
     }
     
+    // 保存报告到 JSON 文件（用于 RSS 服务器）
+    let reports_dir = std::env::var("REPORTS_DIR")
+        .unwrap_or_else(|_| "./reports".to_string());
+    std::fs::create_dir_all(&reports_dir)?;
+    
+    let report_filename = format!("{}/{}.json", reports_dir, daily_report.date.format("%Y-%m-%d"));
+    let report_json = serde_json::to_string_pretty(&daily_report)?;
+    std::fs::write(&report_filename, report_json)?;
+    info!("报告已保存到: {}", report_filename);
+    
     // 输出结果
     if let Some(output_path) = output_file {
         std::fs::write(output_path, format_daily_report(&daily_report))?;
         info!("日报已保存到: {}", output_path);
     } else {
         println!("{}", format_daily_report(&daily_report));
+    }
+    
+    // 发布到 Freedit 论坛（现在推荐使用 RSS 集成）
+    if publish_mode || std::env::var("AUTO_PUBLISH").unwrap_or_default() == "true" {
+        println!("\n💡 推荐使用 RSS 集成方式发布日报:");
+        println!("   1. 启动 RSS 服务器: ./target/debug/rust-daily --serve");
+        println!("   2. Freedit 会自动抓取并发布新内容 (每4小时10分钟)");
+        println!("   3. RSS feed 地址: http://localhost:7080/feed");
+        println!("   4. 在 Freedit Inn Feeds 中配置该地址即可自动发布");
     }
     
     // 显示处理统计
